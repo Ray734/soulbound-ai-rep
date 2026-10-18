@@ -1,0 +1,74 @@
+
+name: Build Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "*.zip"
+      - ".github/workflows/android.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Extract Android project
+        run: |
+          ZIP_FILE="soulbound-ai-oct-18-2026-6-38-11-am.zip"
+          test -f "$ZIP_FILE" || {
+            echo "Project ZIP was not found in the repository root."
+            exit 1
+          }
+          mkdir source
+          unzip -q "$ZIP_FILE" -d source
+          cp -R source/. .
+          rm -rf source
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "9.3.1"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages
+        run: |
+          sdkmanager "platform-tools" \
+            "platforms;android-36" \
+            "platforms;android-36.1" \
+            "build-tools;36.0.0"
+
+      - name: Prepare debug signing key
+        run: |
+          keytool -genkeypair -v \
+            -keystore debug.keystore \
+            -storepass android \
+            -alias androiddebugkey \
+            -keypass android \
+            -dname "CN=Android Debug,O=Android,C=US" \
+            -keyalg RSA -keysize 2048 -validity 10000
+
+      - name: Build debug APK
+        run: gradle --no-daemon assembleDebug
+
+      - name: Save APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: soulbound-ai-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          
