@@ -1,63 +1,37 @@
+- name: Extract Android project
+  shell: bash
+  run: |
+    set -euo pipefail
 
-name: Build Android APK
+    ZIP_FILE="$(find . -type f -iname '*.zip' \
+                  -not -path './.git/*' \
+                  -not -path './source/*' \
+                  -not -path '*/node_modules/*' \
+                  -not -path '*/build/*' \
+                  -print -quit)"
+    if [ -z "${ZIP_FILE}" ]; then
+      echo "::error::No ZIP file found. Upload your project archive."
+      exit 1
+    fi
+    echo "Found project archive: ${ZIP_FILE}"
 
-on:
-  workflow_dispatch:
-  push:
-    paths:
-      - "*.zip"
-      - ".github/workflows/android.yml"
+    command -v unzip >/dev/null || { echo "Installing unzip"; sudo apt-get update -qq && sudo apt-get install -y -qq unzip; }
 
-permissions:
-  contents: read
+    TMP_DIR="$(mktemp -d)"
+    unzip -q -o "${ZIP_FILE}" -d "${TMP_DIR}"
 
-jobs:
-  build:
-    runs-on: ubuntu-latest
+    # Flatten a single top-level directory if present
+    mapfile -t ENTRIES < <(find "${TMP_DIR}" -mindepth 1 -maxdepth 1)
+    SRC="${TMP_DIR}"
+    if [ "${#ENTRIES[@]}" -eq 1 ] && [ -d "${ENTRIES[0]}" ]; then
+      SRC="${ENTRIES[0]}"
+      echo "Flattening top-level directory: $(basename "${SRC}")"
+    fi
 
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
+    cp -a "${SRC}"/. .
+    rm -rf "${TMP_DIR}"
 
-      - name: Find and extract Android project
-        shell: bash
-        run: |
-          ZIP_FILE=$(find . -type f -iname "*.zip" -not -path "./.git/*" | head -n 1)
-          if [ -z "$ZIP_FILE" ]; then
-            echo "ERROR: No ZIP file found in the repository."
-            exit 1
-          fi
-          echo "Found project archive: $ZIP_FILE"
-          mkdir -p source
-          unzip -q "$ZIP_FILE" -d source
-          cp -R source/. .
-          rm -rf source
-
-      - name: Set up Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "17"
-
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: "8.13"
-
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install Android SDK packages
-        run: |
-          sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0"
-
-      - name: Build debug APK
-        run: gradle --no-daemon assembleDebug
-
-      - name: Save APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: soulbound-ai-debug-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
-          if-no-files-found: error
-          
+    # Sanity check
+    if [ ! -f ./settings.gradle ] && [ ! -f ./settings.gradle.kts ]; then
+      echo "::warning::No settings.gradle(.kts) at repo root — Gradle commands may fail."
+    fi
