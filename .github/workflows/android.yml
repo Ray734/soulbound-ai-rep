@@ -1,37 +1,72 @@
-- name: Extract Android project
-  shell: bash
-  run: |
-    set -euo pipefail
+name: Android Build
 
-    ZIP_FILE="$(find . -type f -iname '*.zip' \
-                  -not -path './.git/*' \
-                  -not -path './source/*' \
-                  -not -path '*/node_modules/*' \
-                  -not -path '*/build/*' \
-                  -print -quit)"
-    if [ -z "${ZIP_FILE}" ]; then
-      echo "::error::No ZIP file found. Upload your project archive."
-      exit 1
-    fi
-    echo "Found project archive: ${ZIP_FILE}"
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
 
-    command -v unzip >/dev/null || { echo "Installing unzip"; sudo apt-get update -qq && sudo apt-get install -y -qq unzip; }
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
 
-    TMP_DIR="$(mktemp -d)"
-    unzip -q -o "${ZIP_FILE}" -d "${TMP_DIR}"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-    # Flatten a single top-level directory if present
-    mapfile -t ENTRIES < <(find "${TMP_DIR}" -mindepth 1 -maxdepth 1)
-    SRC="${TMP_DIR}"
-    if [ "${#ENTRIES[@]}" -eq 1 ] && [ -d "${ENTRIES[0]}" ]; then
-      SRC="${ENTRIES[0]}"
-      echo "Flattening top-level directory: $(basename "${SRC}")"
-    fi
+      # Only needed if the repo holds the project as a .zip instead of loose files.
+      # Skipped automatically when settings.gradle.kts is already at the repo root.
+      - name: Extract project zip (if needed)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f settings.gradle.kts ] || [ -f settings.gradle ]; then
+            echo "Project already at repo root, skipping extraction."
+            exit 0
+          fi
+          ZIP_FILE="$(find . -type f -iname '*.zip' -not -path './.git/*' -print -quit)"
+          if [ -z "${ZIP_FILE}" ]; then
+            echo "::error::No settings.gradle(.kts) and no ZIP file found."
+            exit 1
+          fi
+          echo "Extracting ${ZIP_FILE}"
+          unzip -q -o "${ZIP_FILE}" -d .
 
-    cp -a "${SRC}"/. .
-    rm -rf "${TMP_DIR}"
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
 
-    # Sanity check
-    if [ ! -f ./settings.gradle ] && [ ! -f ./settings.gradle.kts ]; then
-      echo "::warning::No settings.gradle(.kts) at repo root — Gradle commands may fail."
-    fi
+      # The project has no gradlew, so install the Gradle version it asks for.
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 9.3.1
+
+      - name: Accept Android SDK licenses
+        shell: bash
+        run: yes | "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+
+      # build.gradle.kts expects ./debug.keystore for the debug signing config.
+      - name: Create debug keystore
+        shell: bash
+        run: |
+          if [ ! -f debug.keystore ]; then
+            keytool -genkeypair -v \
+              -keystore debug.keystore \
+              -storepass android -keypass android \
+              -alias androiddebugkey \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US"
+          fi
+
+      - name: Build debug APK
+        run: gradle assembleDebug --stacktrace
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-debug-apk
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
